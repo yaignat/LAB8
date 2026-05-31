@@ -22,135 +22,121 @@ public class ServerNetworkService {
     private final int port;
     private final CommandInvoker invoker;
     private final DatabaseManager dbManager;
-    private final ExecutorService senderPool = Executors.newCachedThreadPool();
+    private final ExecutorService readerPool;
+    private final ExecutorService processingPool;
+    private final ExecutorService senderPool;
 
-    public ServerNetworkService(int port, CommandInvoker invoker, DatabaseManager dbManager) {
+    public ServerNetworkService(int port, CommandInvoker invoker, DatabaseManager dbManager,
+                                PoolConfig readerConfig, PoolConfig processingConfig) {
         this.port = port;
         this.invoker = invoker;
         this.dbManager = dbManager;
+
+        this.readerPool = createPool(readerConfig);
+        this.processingPool = createPool(processingConfig);
+        this.senderPool = Executors.newCachedThreadPool();
+
+        logger.info("Network initialized | Reader: {} | Processing: {} | Sender: Cached",
+                readerConfig.type(), processingConfig.type());
+    }
+
+    private ExecutorService createPool(PoolConfig config) {
+        return switch (config.type()) {
+            case NEW_THREAD -> null;
+            case FIXED -> Executors.newFixedThreadPool(config.size());
+            case CACHED -> Executors.newCachedThreadPool();
+        };
     }
 
     public void start() {
         logger.info("Starting UDP server on port {}", port);
-
         try (DatagramChannel channel = DatagramChannel.open()) {
             channel.configureBlocking(false);
             channel.bind(new InetSocketAddress(port));
-
             Selector selector = Selector.open();
             channel.register(selector, SelectionKey.OP_READ);
-
             logger.info("Server ready");
 
             while (!Thread.currentThread().isInterrupted()) {
                 selector.select();
-
                 Set<SelectionKey> keys = selector.selectedKeys();
                 Iterator<SelectionKey> iterator = keys.iterator();
-
                 while (iterator.hasNext()) {
                     SelectionKey key = iterator.next();
                     iterator.remove();
-
                     if (key.isReadable()) {
-                        new Thread(() -> handleRequest(channel)).start();
+                        if (readerPool == null) new Thread(() -> readAndDispatch(channel)).start();
+                        else readerPool.submit(() -> readAndDispatch(channel));
                     }
                 }
             }
         } catch (Exception e) {
-            logger.error("Server error: {}", e.getMessage(), e);
+            logger.error("Server fatal error: {}", e.getMessage(), e);
         } finally {
+            if (readerPool != null) readerPool.shutdown();
+            if (processingPool != null) processingPool.shutdown();
             senderPool.shutdown();
         }
     }
 
-    private void handleRequest(DatagramChannel channel) {
-        logger.info(">>> НАЧАЛО ОБРАБОТКИ ЗАПРОСА <<<");
-
+    private void readAndDispatch(DatagramChannel channel) {
         InetSocketAddress clientAddress = null;
-
         try {
             ByteBuffer buffer = ByteBuffer.allocate(65535);
             buffer.clear();
-
-            logger.info("Ожидание получения пакета...");
             clientAddress = (InetSocketAddress) channel.receive(buffer);
-
-            if (clientAddress == null) {
-                logger.warn("Получен null адрес клиента!");
-                return;
-            }
-
-            logger.info("Пакет получен от: {}", clientAddress.getAddress().getHostAddress());
+            if (clientAddress == null) return;
 
             buffer.flip();
             byte[] data = new byte[buffer.remaining()];
             buffer.get(data);
-            logger.info("Размер полученных данных: {} байт", data.length);
 
             RequestWrapper wrapper;
             try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {
                 wrapper = (RequestWrapper) ois.readObject();
-                logger.info("RequestWrapper десериализован успешно");
             }
+            final RequestWrapper fw = wrapper;
+            final DatagramChannel fc = channel;
+            final InetSocketAddress fa = clientAddress;
 
-            logger.info("Login из wrapper: '{}'", wrapper.getLogin());
-            logger.info("PasswordHash из wrapper: '{}' (длина: {})",
-                    wrapper.getPasswordHash(),
-                    wrapper.getPasswordHash() != null ? wrapper.getPasswordHash().length() : 0);
-            logger.info("Command type: '{}'", wrapper.getCommand() != null ? wrapper.getCommand().getType() : "NULL");
+            if (processingPool == null) new Thread(() -> processRequest(fw, fc, fa)).start();
+            else processingPool.submit(() -> processRequest(fw, fc, fa));
 
-            int userId = dbManager.validateUser(wrapper.getLogin(), wrapper.getPasswordHash());
-            logger.info("Результат авторизации - userId: {}", userId);
-
-            if (userId == -1) {
-                logger.warn("Auth failed для пользователя: '{}'", wrapper.getLogin());
-                sendResponse(channel, clientAddress, "Auth failed: invalid login or password");
-                return;
-            }
-
-            String result = invoker.execute(wrapper.getCommand(), userId, wrapper.getLogin());
-
-            final DatagramChannel finalChannel = channel;
-            final InetSocketAddress finalClientAddress = clientAddress;
-            final String finalResult = result;
-
-            senderPool.submit(() -> {
-                try {
-                    sendResponse(finalChannel, finalClientAddress, finalResult);
-                    logger.debug("Ответ отправлен клиенту {}", finalClientAddress);
-                } catch (IOException e) {
-                    logger.error("Ошибка отправки ответа: {}", e.getMessage());
-                }
-            });
-
-        } catch (ClassNotFoundException e) {
-            logger.error("Ошибка десериализации: {}", e.getMessage(), e);
-            if (clientAddress != null) {
-                try { sendResponse(channel, clientAddress, "Invalid request format"); }
-                catch (IOException ignored) {}
-            }
         } catch (Exception e) {
-            logger.error("КРИТИЧЕСКАЯ ОШИБКА обработки запроса: {}", e.getMessage(), e);
-            e.printStackTrace(); // ← ВАЖНО: полный стектрейс
-            if (clientAddress != null) {
-                try { sendResponse(channel, clientAddress, "Internal server error"); }
-                catch (IOException ignored) {}
+            logger.error("Read/Dispatch error: {}", e.getMessage());
+            sendError(channel, clientAddress, "Read error");
+        }
+    }
+    private void processRequest(RequestWrapper wrapper, DatagramChannel channel, InetSocketAddress clientAddress) {
+        try {
+            String result;
+
+            if (wrapper.getCommand() != null && "register".equalsIgnoreCase(wrapper.getCommand().getType())) {
+                result = invoker.execute(wrapper.getCommand(), -1, wrapper.getLogin(), wrapper.getPasswordHash());
+            } else {
+                result = invoker.execute(wrapper.getCommand(), 0, wrapper.getLogin(), wrapper.getPasswordHash());
             }
+
+            final String fr = result;
+            senderPool.submit(() -> {
+                try { sendResponse(channel, clientAddress, fr); }
+                catch (IOException e) { logger.error("Send error: {}", e.getMessage()); }
+            });
+        } catch (Exception e) {
+            logger.error("Processing error: {}", e.getMessage());
+            sendError(channel, clientAddress, "Internal error: " + e.getMessage());
         }
     }
 
-    private void sendResponse(DatagramChannel channel, InetSocketAddress address, String message)
-            throws IOException {
-
-        byte[] data;
+    private void sendResponse(DatagramChannel ch, InetSocketAddress addr, String msg) throws IOException {
         try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
              ObjectOutputStream oos = new ObjectOutputStream(bos)) {
-            oos.writeObject(message);
-            data = bos.toByteArray();
+            oos.writeObject(msg);
+            ch.send(ByteBuffer.wrap(bos.toByteArray()), addr);
         }
+    }
 
-        ByteBuffer buffer = ByteBuffer.wrap(data);
-        channel.send(buffer, address);
+    private void sendError(DatagramChannel ch, InetSocketAddress addr, String msg) {
+        if (addr != null) try { sendResponse(ch, addr, msg); } catch (IOException ignored) {}
     }
 }

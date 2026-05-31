@@ -21,5 +21,5 @@ public class AddCommand extends Command implements Serializable {
     }
 
     @Override
-    public String execute(Object context) { return ""; } // Не используется
+    public String execute(Object context) { return ""; }
 }

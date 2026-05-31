@@ -1,6 +1,8 @@
 import collection.CollectionManager;
 import command.CommandInvoker;
 import database.DatabaseManager;
+import network.PoolConfig;
+import network.PoolType;
 import network.ServerNetworkService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,33 +11,21 @@ public class ServerApp {
     private static final Logger logger = LoggerFactory.getLogger(ServerApp.class);
 
     public static void main(String[] args) {
-        logger.info("=== ЗАПУСК СЕРВЕРА ===");
-
+        logger.info("=== Сервер Запускается ===");
         try {
-            DatabaseManager dbManager = new DatabaseManager();
-            logger.info("DatabaseManager initialized");
+            DatabaseManager db = new DatabaseManager();
+            CollectionManager cm = new CollectionManager(db.loadAllLabWorks());
+            CommandInvoker invoker = new CommandInvoker(cm, db);
 
-            var dbCollection = dbManager.loadAllLabWorks();
-            logger.info("Loaded {} elements from database", dbCollection.size());
+            PoolConfig readerConf = new PoolConfig(PoolType.NEW_THREAD, 0);
+            PoolConfig procConf   = new PoolConfig(PoolType.NEW_THREAD, 0);
 
-            CollectionManager collectionManager = new CollectionManager(dbCollection);
+            logger.info("Config -> Reader: {} | Processing: {}", readerConf.type(), procConf.type());
 
-            CommandInvoker invoker = new CommandInvoker(collectionManager, dbManager);
-
-            ServerNetworkService server = new ServerNetworkService(5001, invoker, dbManager);
-
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                logger.info("Stopping server...");
-                try { Thread.sleep(500); } catch (InterruptedException e) {}
-                logger.info("Server stopped");
-            }));
-
-            logger.info("Server started on port 5001");
+            ServerNetworkService server = new ServerNetworkService(5001, invoker, db, readerConf, procConf);
             server.start();
-
         } catch (Exception e) {
-            logger.error("Critical server error: {}", e.getMessage(), e);
-            System.exit(1);
+            logger.error("FATAL: {}", e.getMessage(), e);
         }
     }
 }

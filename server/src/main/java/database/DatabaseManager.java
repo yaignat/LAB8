@@ -12,8 +12,8 @@ import java.util.Optional;
 
 public class DatabaseManager {
     private static final Logger logger = LoggerFactory.getLogger(DatabaseManager.class);
-    private static final String URL = "jdbc:postgresql://pg:5432/studs";
-    private static final String HOST = "bg";
+    private static final String URL = "jdbc:postgresql://localhost:5432/studs";
+    private static final String HOST = "localhost";
     private static final int PORT = 5432;
     private static final String DATABASE = "studs";
     private static final String[] CREDS = PgPassReader.loadCredentials(HOST, PORT, DATABASE);
@@ -24,6 +24,9 @@ public class DatabaseManager {
         return DriverManager.getConnection(URL, USER, PASS);
     }
 
+    /**
+     * Проверяет логин и хэш пароля. Возвращает ID пользователя если успешно, или -1 если нет.
+     */
     public int validateUser(String login, String hash) {
         if (logger.isDebugEnabled()) {
             logger.debug("Проверка авторизации: login='{}'", login);
@@ -51,6 +54,9 @@ public class DatabaseManager {
         return -1;
     }
 
+    /**
+     * Регистрирует нового пользователя.
+     */
     public boolean registerUser(String login, String hash) {
         String sql = "INSERT INTO users (login, password_hash) VALUES (?, ?)";
         try (Connection c = getConnection();
@@ -64,6 +70,9 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Загружает все лабораторные работы из БД.
+     */
     public List<LabWork> loadAllLabWorks() {
         List<LabWork> list = new LinkedList<>();
         String sql = "SELECT * FROM lab_works ORDER BY id";
@@ -80,6 +89,9 @@ public class DatabaseManager {
         return list;
     }
 
+    /**
+     * Добавляет новую лабораторную работу.
+     */
     public boolean addLabWork(LabWork lw, int ownerId) {
         String sql = "INSERT INTO lab_works (id, name, coordinates_x, coordinates_y, " +
                 "minimal_point, personal_qualities_maximum, difficulty, " +
@@ -105,6 +117,9 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Обновляет существующую лабораторную работу.
+     */
     public boolean updateLabWork(LabWork lw, int ownerId) {
         String sql = "UPDATE lab_works SET name=?, coordinates_x=?, coordinates_y=?, " +
                 "minimal_point=?, personal_qualities_maximum=?, difficulty=?, " +
@@ -128,6 +143,9 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Удаляет лабораторную работу по ID.
+     */
     public boolean removeLabWork(Long id, int ownerId) {
         String sql = "DELETE FROM lab_works WHERE id=? AND owner_id=?";
         try (Connection c = getConnection();
@@ -141,6 +159,9 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Очищает все работы конкретного пользователя.
+     */
     public int clearUserLabWorks(int ownerId) {
         String sql = "DELETE FROM lab_works WHERE owner_id=?";
         try (Connection c = getConnection();
@@ -153,6 +174,9 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Получает следующий свободный ID из последовательности.
+     */
     public long getNextId() {
         try (Connection c = getConnection();
              Statement st = c.createStatement();
@@ -164,6 +188,9 @@ public class DatabaseManager {
         return System.currentTimeMillis() % 100000;
     }
 
+    /**
+     * Получает ID владельца объекта по его ID.
+     */
     public Optional<Integer> getOwnerById(Long id) {
         String sql = "SELECT owner_id FROM lab_works WHERE id=?";
         try (Connection c = getConnection();
@@ -177,6 +204,9 @@ public class DatabaseManager {
         return Optional.empty();
     }
 
+    /**
+     * Проверяет существование объекта по ID.
+     */
     public boolean existsById(Long id) {
         String sql = "SELECT COUNT(*) FROM lab_works WHERE id=?";
         try (Connection c = getConnection();
@@ -190,6 +220,9 @@ public class DatabaseManager {
         return false;
     }
 
+    /**
+     * Маппит строку ResultSet в объект LabWork.
+     */
     private LabWork mapRow(ResultSet rs) throws SQLException {
         Coordinates coord = new Coordinates(
                 rs.getDouble("coordinates_x"),
@@ -225,5 +258,26 @@ public class DatabaseManager {
         lw.setCreationDate(rs.getTimestamp("creation_date"));
         lw.setOwnerId(rs.getInt("owner_id"));
         return lw;
+    }
+
+    /**
+     * Получает ID пользователя по его логину.
+     * Используется для проверки аутентификации.
+     */
+    public Optional<Integer> getUserIdByLogin(String login) {
+        String sql = "SELECT id FROM users WHERE login = ?";
+        try (Connection conn = getConnection(); // <-- ИСПРАВЛЕНО: используем getConnection() вместо dataSource
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, login);
+            ResultSet rs = stmt.executeQuery();
+
+            if (rs.next()) {
+                return Optional.of(rs.getInt("id"));
+            }
+        } catch (SQLException e) {
+            logger.error("Ошибка получения ID пользователя по логину {}: {}", login, e.getMessage());
+        }
+        return Optional.empty();
     }
 }

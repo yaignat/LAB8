@@ -7,6 +7,8 @@ import data.LabWork;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Optional;
+
 public class CommandInvoker {
     private static final Logger logger = LoggerFactory.getLogger(CommandInvoker.class);
 
@@ -19,7 +21,39 @@ public class CommandInvoker {
         logger.info("CommandInvoker initialized");
     }
 
-    public String execute(Command cmd, int userId, String login) {
+    /**
+     * Проверяет логин и хэш пароля пользователя.
+     */
+    private boolean authenticateUser(int userId, String login, String passwordHash) {
+        try {
+            int validatedId = dbManager.validateUser(login, passwordHash);
+
+            if (validatedId == -1) {
+                logger.warn("Неверный пароль для пользователя '{}'", login);
+                return false;
+            }
+
+            return true;
+
+        } catch (Exception e) {
+            logger.error("Ошибка аутентификации пользователя '{}': {}", login, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Получает реальный ID пользователя по логину из БД.
+     */
+    private int getRealUserId(String login) {
+        Optional<Integer> realUserIdOpt = dbManager.getUserIdByLogin(login);
+        if (!realUserIdOpt.isPresent()) {
+            logger.error("Пользователь '{}' не найден в базе", login);
+            return -1;
+        }
+        return realUserIdOpt.get();
+    }
+
+    public String execute(Command cmd, int userId, String login, String passwordHash) {
         if (cmd == null) {
             logger.error("Получена null команда!");
             return "Ошибка: пустая команда";
@@ -34,11 +68,21 @@ public class CommandInvoker {
         logger.info(">>> ВЫПОЛНЕНИЕ КОМАНДЫ: '{}' от пользователя '{}' (ID={})",
                 cmdType, login, userId);
 
+        // Проверяем аутентификацию для всех команд КРОМЕ register
+        if (!"register".equalsIgnoreCase(cmdType)) {
+            if (!authenticateUser(userId, login, passwordHash)) {
+                logger.warn("ОТКАЗАНО В ДОСТУПЕ: Неверный логин или пароль для пользователя '{}' (ID={})", login, userId);
+                return "Ошибка аутентификации: Неверный логин или пароль.";
+            }
+        }
+
         try {
             switch (cmdType.toLowerCase()) {
                 case "info":
                     logger.info("Обработка команды info");
-                    return collectionManager.getInfo();
+                    String baseInfo = collectionManager.getInfo();
+                    int realUserId = getRealUserId(login);
+                    return baseInfo + "\nПользователь: " + login + " (ID=" + realUserId + ")";
 
                 case "show":
                     logger.info("Обработка команды show");
@@ -120,19 +164,24 @@ public class CommandInvoker {
                 return "Ошибка: пустой объект LabWork";
             }
 
+            int realUserId = getRealUserId(login);
+            if (realUserId == -1) {
+                return "Ошибка: пользователь не найден";
+            }
+
             long newId = dbManager.getNextId();
             lwAdd.setId(newId);
-            lwAdd.setOwnerId(userId);
+            lwAdd.setOwnerId(realUserId);
 
-            if (dbManager.addLabWork(lwAdd, userId)) {
+            if (dbManager.addLabWork(lwAdd, realUserId)) {
                 collectionManager.add(lwAdd);
-                logger.info("Элемент ID={} добавлен пользователем {}", newId, login);
+                logger.info("Элемент ID={} добавлен пользователем {} (ID={})", newId, login, realUserId);
                 return "Элемент успешно добавлен с ID: " + newId;
             } else {
                 return "Ошибка при добавлении в базу данных";
             }
         } catch (Exception e) {
-            logger.error("Ошибка в handleAdd: {}", e.getMessage());
+            logger.error("Ошибка в handleAdd: {}", e.getMessage(), e);
             return "Ошибка добавления: " + e.getMessage();
         }
     }
@@ -146,6 +195,11 @@ public class CommandInvoker {
                 return "Ошибка: некорректные данные для обновления";
             }
 
+            int realUserId = getRealUserId(login);
+            if (realUserId == -1) {
+                return "Ошибка: пользователь не найден";
+            }
+
             lwUpdate.setCreationDate(collectionManager.getCreationDateById(idUpdate));
 
             if (!dbManager.existsById(idUpdate)) {
@@ -153,19 +207,19 @@ public class CommandInvoker {
             }
 
             var ownerOpt = dbManager.getOwnerById(idUpdate);
-            if (ownerOpt.isPresent() && ownerOpt.get() != userId) {
+            if (ownerOpt.isPresent() && ownerOpt.get() != realUserId) {
                 return "Ошибка: у вас нет прав на изменение этого элемента";
             }
 
-            if (dbManager.updateLabWork(lwUpdate, userId)) {
-                collectionManager.updateById(idUpdate, lwUpdate, userId);
-                logger.info("Элемент ID={} обновлён пользователем {}", idUpdate, login);
+            if (dbManager.updateLabWork(lwUpdate, realUserId)) {
+                collectionManager.updateById(idUpdate, lwUpdate, realUserId);
+                logger.info("Элемент ID={} обновлён пользователем {} (ID={})", idUpdate, login, realUserId);
                 return "Элемент с ID=" + idUpdate + " успешно обновлён";
             } else {
                 return "Ошибка при обновлении в базе данных";
             }
         } catch (Exception e) {
-            logger.error("Ошибка в handleUpdate: {}", e.getMessage());
+            logger.error("Ошибка в handleUpdate: {}", e.getMessage(), e);
             return "Ошибка обновления: " + e.getMessage();
         }
     }
@@ -177,61 +231,76 @@ public class CommandInvoker {
                 return "Ошибка: не указан ID для удаления";
             }
 
+            int realUserId = getRealUserId(login);
+            if (realUserId == -1) {
+                return "Ошибка: пользователь не найден";
+            }
+
             if (!dbManager.existsById(idRemove)) {
                 return "Элемент с ID=" + idRemove + " не найден";
             }
 
             var ownerOpt = dbManager.getOwnerById(idRemove);
-            if (ownerOpt.isPresent() && ownerOpt.get() != userId) {
+            if (ownerOpt.isPresent() && ownerOpt.get() != realUserId) {
                 return "Ошибка: у вас нет прав на удаление этого элемента";
             }
 
-            if (dbManager.removeLabWork(idRemove, userId)) {
-                collectionManager.removeById(idRemove, userId);
-                logger.info("Элемент ID={} удалён пользователем {}", idRemove, login);
+            if (dbManager.removeLabWork(idRemove, realUserId)) {
+                collectionManager.removeById(idRemove, realUserId);
+                logger.info("Элемент ID={} удалён пользователем {} (ID={})", idRemove, login, realUserId);
                 return "Элемент с ID=" + idRemove + " успешно удалён";
             } else {
                 return "Ошибка при удалении из базы данных";
             }
         } catch (Exception e) {
-            logger.error("Ошибка в handleRemoveById: {}", e.getMessage());
+            logger.error("Ошибка в handleRemoveById: {}", e.getMessage(), e);
             return "Ошибка удаления: " + e.getMessage();
         }
     }
 
     private String handleClear(int userId, String login) {
         try {
-            int removedFromDb = dbManager.clearUserLabWorks(userId);
-            collectionManager.clear(userId);
-            logger.info("Пользователь {} очистил {} элементов", login, removedFromDb);
+            int realUserId = getRealUserId(login);
+            if (realUserId == -1) {
+                return "Ошибка: пользователь не найден";
+            }
+
+            int removedFromDb = dbManager.clearUserLabWorks(realUserId);
+            collectionManager.clear(realUserId);
+            logger.info("Пользователь {} (ID={}) очистил {} элементов", login, realUserId, removedFromDb);
             return "Коллекция очищена. Удалено элементов: " + removedFromDb;
         } catch (Exception e) {
-            logger.error("Ошибка в handleClear: {}", e.getMessage());
+            logger.error("Ошибка в handleClear: {}", e.getMessage(), e);
             return "Ошибка очистки: " + e.getMessage();
         }
     }
 
     private String handleRemoveFirst(int userId, String login) {
         try {
+            int realUserId = getRealUserId(login);
+            if (realUserId == -1) {
+                return "Ошибка: пользователь не найден";
+            }
+
             var firstOpt = collectionManager.getCollection().stream().findFirst();
             if (firstOpt.isEmpty()) {
                 return "Коллекция пуста";
             }
 
             LabWork first = firstOpt.get();
-            if (first.getOwnerId() != userId) {
+            if (first.getOwnerId() != realUserId) {
                 return "Ошибка: вы не являетесь владельцем первого элемента";
             }
 
-            if (dbManager.removeLabWork(first.getId(), userId)) {
-                collectionManager.removeFirst(userId);
-                logger.info("Первый элемент ID={} удалён пользователем {}", first.getId(), login);
+            if (dbManager.removeLabWork(first.getId(), realUserId)) {
+                collectionManager.removeFirst(realUserId);
+                logger.info("Первый элемент ID={} удалён пользователем {} (ID={})", first.getId(), login, realUserId);
                 return "Первый элемент успешно удалён";
             } else {
                 return "Ошибка при удалении первого элемента из базы данных";
             }
         } catch (Exception e) {
-            logger.error("Ошибка в handleRemoveFirst: {}", e.getMessage());
+            logger.error("Ошибка в handleRemoveFirst: {}", e.getMessage(), e);
             return "Ошибка удаления первого элемента: " + e.getMessage();
         }
     }
@@ -243,23 +312,28 @@ public class CommandInvoker {
                 return "Ошибка: пустой объект LabWork";
             }
 
-            lwIfMax.setOwnerId(userId);
+            int realUserId = getRealUserId(login);
+            if (realUserId == -1) {
+                return "Ошибка: пользователь не найден";
+            }
+
+            lwIfMax.setOwnerId(realUserId);
             long newId = dbManager.getNextId();
             lwIfMax.setId(newId);
 
             if (collectionManager.addIfMax(lwIfMax)) {
-                if (dbManager.addLabWork(lwIfMax, userId)) {
-                    logger.info("Элемент ID={} добавлен как максимальный пользователем {}", newId, login);
+                if (dbManager.addLabWork(lwIfMax, realUserId)) {
+                    logger.info("Элемент ID={} добавлен как максимальный пользователем {} (ID={})", newId, login, realUserId);
                     return "Элемент добавлен как максимальный с ID: " + newId;
                 } else {
-                    collectionManager.removeById(newId, userId);
+                    collectionManager.removeById(newId, realUserId);
                     return "Ошибка при сохранении в базу данных";
                 }
             } else {
                 return "Элемент не является максимальным, добавление отменено";
             }
         } catch (Exception e) {
-            logger.error("Ошибка в handleAddIfMax: {}", e.getMessage());
+            logger.error("Ошибка в handleAddIfMax: {}", e.getMessage(), e);
             return "Ошибка add_if_max: " + e.getMessage();
         }
     }

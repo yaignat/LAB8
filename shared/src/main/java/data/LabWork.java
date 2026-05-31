@@ -146,6 +146,7 @@ public class LabWork implements Serializable, Comparable<LabWork> {
                 ", personalQualitiesMaximum=" + personalQualitiesMaximum +
                 ", difficulty=" + difficulty +
                 ", discipline=" + discipline +
+                ", owner=" + ownerId +
                 '}';
     }
 

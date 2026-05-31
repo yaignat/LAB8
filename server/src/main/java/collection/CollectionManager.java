@@ -21,7 +21,7 @@ public class CollectionManager {
 
     private final LinkedList<LabWork> collection;
     private final Date creationDate;
-    private final ReadWriteLock lock = new ReentrantReadWriteLock(); // 🔐 Синхронизация
+    private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
     public CollectionManager(List<LabWork> initialData) {
         this.collection = new LinkedList<>(initialData);

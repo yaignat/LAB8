@@ -1,7 +1,6 @@
 package commands;
 
 import data.LabWork;
-
 import java.io.Serial;
 import java.io.Serializable;
 
@@ -14,18 +13,20 @@ public class UpdateCommand extends Command implements Serializable {
 
     public UpdateCommand(Long id, LabWork labWork) {
         super("update");
-        this.labWork = labWork;
         this.id = id;
-    }
-
-    public LabWork getLabWork() {
-        return labWork;
+        this.labWork = labWork;
     }
 
     public Long getId() {
         return id;
     }
 
+    public LabWork getLabWork() {
+        return labWork;
+    }
+
     @Override
-    public String execute(Object context) {return  "";}
+    public String execute(Object context) {
+        return "";
+    }
 }

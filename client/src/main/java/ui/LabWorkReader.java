@@ -1,170 +1,111 @@
 package ui;
 
 import data.*;
-import Exception.*;
-import java.util.Scanner;
-/**
- * Класс для считывания данных объекта LabWork из консоли или скрипта.
- * Обеспечивает валидацию ввода пользователем и повторный запрос при ошибках.
- * Поддерживает работу в интерактивном режиме и режиме выполнения скриптов.
- */
+import java.util.ArrayList;
+import java.util.List;
+
 public class LabWorkReader {
-    private Scanner scanner;
-    private boolean isScriptMode = false;
 
-    public LabWorkReader(Scanner scanner) { this.scanner = scanner; }
+    // ... твой существующий код для консоли (readLabWorkFromConsole и т.д.) оставь без изменений ...
 
-    public void setScanner(Scanner scanner) { this.scanner = scanner; }
-    public Scanner getScanner() {return scanner; }
-    public void setScriptMode(boolean scriptMode) { isScriptMode = scriptMode; }
+    public static List<LabWork> parseServerResponse(String response) {
+        List<LabWork> list = new ArrayList<>();
 
-    /**
-     * Считывает данные новой лабораторной работы из стандартного потока ввода (консоли).
-     * Запрашивает каждое поле отдельно, выводя подсказки пользователю.
-     *
-     * @return новый объект LabWork с введенными данными
-     */
-    public LabWork readLabWorkFromConsole() {
-        System.out.print("Введите name: ");
-        String name = readNonEmptyString();
-
-        System.out.print("Введите x (> -279): ");
-        double x = readDouble();
-        while (x <= -279) {
-            System.out.println("X должен быть > -279. Повторите: ");
-            x = readDouble();
-        }
-        System.out.print("Введите y (> -240): ");
-        long y = readLong();
-        while (y <= -240) {
-            System.out.println("Y должен быть > -240. Повторите: ");
-            y = readLong();
-        }
-        Coordinates coords = new Coordinates(x, y);
-
-        System.out.print("Введите minimalPoint (>0): ");
-        float minP = (float) readDouble();
-        while (minP <= 0) {
-            System.out.println("minimalpoint > 0. Повторите: ");
-            minP = (float) readDouble();
+        if (response == null || response.trim().isEmpty()) {
+            return list;
         }
 
-        System.out.print("Введите personalQualitiesMaximum (>0): ");
-        double pqMax = readDouble();
-        while (pqMax <= 0) {
-            System.out.println("personalQualitiesMaximum > 0. Повторите: ");
-            pqMax = readDouble();
+        if (response.contains("Ошибка аутентификации") ||
+                response.contains("Неверный логин") ||
+                response.startsWith("Ошибка")) {
+            return list;
         }
 
-        System.out.println("Доступные Difficulty: EASY, NORMAL, HARD, VERY_HARD, HOPELESS");
-        System.out.print("Введите difficulty: ");
-        Difficulty diff = readEnum(Difficulty.class);
+        String[] objects = response.split("LabWork\\{");
 
-        System.out.print("Введите название дисциплины: ");
-        String discName = readNonEmptyString();
+        for (String objStr : objects) {
+            if (objStr == null || objStr.trim().isEmpty()) continue;
 
-        Integer lh = null;
-        boolean inputValid = false;
-        while (!inputValid) {
-            System.out.print("Введите lectureHours (или нажмите Enter для пропуска): ");
-            String lhLine = scanner.nextLine().trim();
-            if (lhLine.isEmpty()) {
-                lh = null;
-                inputValid = true;
-            } else {
-                try {
-                    lh = Integer.parseInt(lhLine);
-                    inputValid = true;
-                } catch (NumberFormatException e) {
-                    System.out.println("Ошибка: Введите целое число или оставьте поле пустым.");
+            try {
+                long id = extractLong(objStr, "id=", ",");
+                String name = extractString(objStr, "name='", "'");
+                if (name.isEmpty()) continue;
+
+                String coordsStr = extractString(objStr, "coordinates={", "}");
+                if (coordsStr.isEmpty()) continue;
+
+                String[] coordsParts = coordsStr.split(",");
+                double x = Double.parseDouble(coordsParts[0].trim());
+                long y = Long.parseLong(coordsParts[1].trim());
+
+                float minP = (float) extractDouble(objStr, "minimalPoint=", ",");
+                double pqMax = extractDouble(objStr, "personalQualitiesMaximum=", ",");
+
+                String diffStr = extractString(objStr, "difficulty=", ",");
+                if (diffStr.isEmpty()) continue;
+                Difficulty diff = Difficulty.valueOf(diffStr.trim().toUpperCase());
+
+                String discStr = extractString(objStr, "discipline=", "}");
+                String discName = discStr;
+                Integer lectureHours = 0;
+
+                if (discStr.contains("(") && discStr.contains("ч)")) {
+                    int nameEnd = discStr.indexOf(" (");
+                    if (nameEnd > 0) {
+                        discName = discStr.substring(0, nameEnd).trim();
+                        String hoursPart = discStr.substring(nameEnd + 2, discStr.indexOf("ч)")).trim();
+                        try {
+                            lectureHours = Integer.parseInt(hoursPart);
+                        } catch (NumberFormatException e) {
+                            lectureHours = 0;
+                        }
+                    }
                 }
+
+                int ownerId = 0;
+                if (objStr.contains("owner=")) {
+                    ownerId = (int) extractLong(objStr, "owner=", "}");
+                }
+
+                Coordinates coords = new Coordinates(x, y);
+                Discipline disc = new Discipline(discName, lectureHours);
+                LabWork lw = new LabWork(name, coords, minP, pqMax, diff, disc);
+
+                lw.setId(id);
+                lw.setOwnerId(ownerId);
+                list.add(lw);
+
+            } catch (Exception e) {
+                // Игнорируем ошибки парсинга отдельных объектов
             }
         }
-        Discipline disc = new Discipline(discName, lh);
-
-        return new LabWork(name, coords, minP, pqMax, diff, disc);
+        return list;
     }
 
-    public LabWork readLabWorkFromScript() {
+    private static String extractString(String src, String start, String end) {
+        int s = src.indexOf(start);
+        if (s == -1) return "";
+        s += start.length();
+        int e = src.indexOf(end, s);
+        if (e == -1) e = src.length();
+        return src.substring(s, e).trim();
+    }
+
+    private static double extractDouble(String src, String start, String end) {
         try {
-            String name = scanner.nextLine();
-            if (name == null || name.isEmpty()) throw new IllegalArgumentException("Name пуст");
-
-            double x = Double.parseDouble(scanner.nextLine());
-            long y = Long.parseLong(scanner.nextLine());
-            Coordinates coords = new Coordinates(x, y);
-            float minP = Float.parseFloat(scanner.nextLine());
-            double pqMax = Double.parseDouble(scanner.nextLine());
-            Difficulty diff = Difficulty.valueOf(scanner.nextLine().trim().toUpperCase());
-            String discName = scanner.nextLine();
-            String lhLine = scanner.nextLine();
-            Integer lh = lhLine.trim().isEmpty() ? null : Integer.parseInt(lhLine.trim());
-            Discipline disc = new Discipline(discName, lh);
-
-            return new LabWork(name, coords, minP, pqMax, diff, disc);
+            String val = extractString(src, start, end);
+            return val.isEmpty() ? 0.0 : Double.parseDouble(val);
         } catch (Exception e) {
-            throw new InvalidInputException("Ошибка чтения из скрипта", e);
+            return 0.0;
         }
     }
-    /**
-     * Считывает строку, гарантируя, что она не пустая.
-     * Циклически запрашивает ввод, пока пользователь не введет значение.
-     *
-     * @return непустая строка
-     */
-    private String readNonEmptyString() {
-        String s = scanner.nextLine();
-        while (s == null || s.trim().isEmpty()) {
-            System.out.print("Строка не может быь пустой. Повторите: ");
-            s = scanner.nextLine();
-        }
-        return s.trim();
-    }
-    /**
-     * Считывает число типа double с обработкой ошибок формата.
-     * Повторяет запрос при вводе нечисловых значений.
-     *
-     * @return корректное значение double
-     */
-    private double readDouble() {
-        while (true) {
-            try {
-                return Double.parseDouble(scanner.nextLine());
-            } catch (NumberFormatException e) {
-                System.out.print("Введите число: ");
-            }
-        }
-    }
-    /**
-     * Считывает число типа long с обработкой ошибок формата.
-     *
-     * @return корректное значение long
-     */
-    private long readLong() {
-        while (true) {
-            try {
-                return Long.parseLong(scanner.nextLine());
-            } catch (NumberFormatException e) {
-                System.out.print("Введите целое число: ");
-            }
-        }
-    }
-    /**
-     * Считывает значение перечисления (Enum) по имени константы.
-     * Выводит ошибку при вводе несуществующей константы.
-     *
-     * @param clazz класс перечисления
-     * @param <T> тип перечисления
-     * @return значение_enum
-     */
-    private <T extends Enum<T>> T readEnum(Class<T> clazz) {
-        while (true) {
-            try {
-                return Enum.valueOf(clazz, scanner.nextLine().trim().toUpperCase());
-            } catch (IllegalArgumentException e) {
-                System.out.print("Неверное значение enum. Повторите: ");
-            }
+
+    private static long extractLong(String src, String start, String end) {
+        try {
+            String val = extractString(src, start, end);
+            return val.isEmpty() ? 0L : Long.parseLong(val);
+        } catch (Exception e) {
+            return 0L;
         }
     }
 }
-
